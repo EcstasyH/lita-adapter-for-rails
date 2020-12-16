@@ -9,11 +9,12 @@ module Lita
 
         self.user = User.create(1, name: "Shell User")
         
-        logfile = File.new("dbread.log","r+")
-        @last_read_id = logfile.gets.to_i
-        logfile.close
+        set_read_id
+        set_uid
+      end
 
-        @uid =0
+      def uid_rid
+        [@uid, @last_read_id]
       end
 
       # rubocop:disable Lint/UnusedMethodArgument
@@ -49,20 +50,72 @@ module Lita
         unless RbConfig::CONFIG["host_os"] =~ /mswin|mingw/ || !$stdout.tty?
           strings.map! { |string| "#{string}" }
         end
-        #
-        @db = SQLite3::Database.open "../db/development.sqlite3"
-        @db.results_as_hash = true
-        rs = @db.execute "SELECT * FROM messages" 
-
-        from_bot = 1
-        new_id = rs.last[0]+1
-        @db.execute "INSERT INTO messages VALUES('#{new_id}','#{strings}','#{from_bot}','#{@uid}','#{Time.now}','#{Time.now}')"
+        
+        open_database
+        write_database(@db, strings)
+        close_database
       end
 
+      def write_database(db, strings)        
+        rs = db.execute "SELECT * FROM messages" 
+        from_bot = 1
+        new_id = rs.last[0]+1
+        db.execute "INSERT INTO messages VALUES('#{new_id}','#{strings}','#{from_bot}','#{@uid}','#{Time.now}','#{Time.now}')"      
+      end
+
+      def open_database(p = "../db/development.sqlite3")
+        @db = SQLite3::Database.open p
+        @db.results_as_hash = true
+        @db
+      end
+
+      def close_database
+        @db.close if @db
+        @db
+      end
+      
       # Adds a blank line for a nice looking exit.
       # @return [void]
       def shut_down
         puts
+      end
+
+      #modified
+      def collect_and_send 
+        open_database
+        
+        a=read_database(@db, @last_read_id)
+
+        close_database
+
+        a.each do |row|
+          @uid = row['user_id']
+          input = row['body']
+          @last_read_id = row['id']
+          
+          if row['from_bot']==true
+            next
+          end
+          robot.receive(build_message(input, @source))
+        end
+
+        record_read_id 
+        a       
+      end
+
+      def read_database(db, last_read_id)
+
+        stm = db.prepare "SELECT * FROM messages WHERE Id>?"
+        stm.bind_param 1, last_read_id
+        rs = stm.execute
+        
+        record = Array.new
+        rs.each do |row| 
+            m = Hash["id"=> row['id'], 'body' => row['body'], 'from_bot'=> row['from_bot'], 'user_id'=>row['user_id'] ]
+            record << m
+        end
+        stm.close if stm
+        record
       end
 
       private
@@ -85,38 +138,6 @@ module Lita
         input.chomp.strip
       end
       
-      #modified
-      def collect_and_send 
-        @db = SQLite3::Database.open "../db/development.sqlite3"
-        
-        @db.results_as_hash = true
-        stm = @db.prepare "SELECT * FROM messages WHERE Id>?"
-        stm.bind_param 1, @last_read_id
-        rs = stm.execute
-        
-        a = Array.new
-        rs.each do |row| 
-            m = Hash["id"=> row['id'], 'body' => row['body'], 'from_bot'=> row['from_bot'], 'user_id'=>row['user_id'] ]
-            a << m
-        end
-        
-        #close 
-        stm.close if stm
-        @db.close if @db
-
-        a.each do |row|
-          @uid = row['user_id']
-          input = row['body']
-          @last_read_id = row['id']
-          
-          if row['from_bot']==true
-            next
-          end
-          robot.receive(build_message(input, @source))
-        end
-
-        record_read_id        
-      end
 
       #modified
       def run_loop
@@ -132,6 +153,16 @@ module Lita
         logfile.close
       end
 
+      def set_read_id
+        logfile = File.new("dbread.log","r+")
+        @last_read_id = logfile.gets.to_i
+        logfile.close
+        @last_read_id
+      end
+
+      def set_uid
+        @uid =0
+      end
       Lita.register_adapter(:railschatbot, self)
     end
   end
